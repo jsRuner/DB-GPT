@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from dbgpt._private.pydantic import model_to_dict
 from dbgpt.core.schema.api import ChatCompletionResponse, ChatCompletionStreamResponse
 
 from .schema import ChatCompletionRequestBody
@@ -61,7 +62,7 @@ class Client:
 
         Args:
             api_base: Optional[str], a full URL for the DB-GPT API.
-                Defaults to the `http://localhost:5000/api/v2`.
+                Defaults to the `http://localhost:5670/api/v2`.
             api_key: Optional[str], The dbgpt api key to use for authentication.
                 Defaults to None.
             timeout: Optional[httpx._types.TimeoutTypes]: The timeout to use.
@@ -77,14 +78,14 @@ class Client:
 
             from dbgpt.client import Client
 
-            DBGPT_API_BASE = "http://localhost:5000/api/v2"
+            DBGPT_API_BASE = "http://localhost:5670/api/v2"
             DBGPT_API_KEY = "dbgpt"
             client = Client(api_base=DBGPT_API_BASE, api_key=DBGPT_API_KEY)
             client.chat(model="chatgpt_proxyllm", messages="Hello?")
         """
         if not api_base:
             api_base = os.getenv(
-                "DBGPT_API_BASE", f"http://localhost:5000/{CLIENT_API_PATH}/{version}"
+                "DBGPT_API_BASE", f"http://localhost:5670/{CLIENT_API_PATH}/{version}"
             )
         if not api_key:
             api_key = os.getenv("DBGPT_API_KEY")
@@ -146,7 +147,7 @@ class Client:
 
             from dbgpt.client import Client
 
-            DBGPT_API_BASE = "http://localhost:5000/api/v2"
+            DBGPT_API_BASE = "http://localhost:5670/api/v2"
             DBGPT_API_KEY = "dbgpt"
             client = Client(api_base=DBGPT_API_BASE, api_key=DBGPT_API_KEY)
             res = await client.chat(model="chatgpt_proxyllm", messages="Hello?")
@@ -167,7 +168,7 @@ class Client:
             enable_vis=enable_vis,
         )
         response = await self._http_client.post(
-            self._api_url + "/chat/completions", json=request.dict()
+            self._api_url + "/chat/completions", json=model_to_dict(request)
         )
         if response.status_code == 200:
             json_data = json.loads(response.text)
@@ -222,7 +223,7 @@ class Client:
 
             from dbgpt.client import Client
 
-            DBGPT_API_BASE = "http://localhost:5000/api/v2"
+            DBGPT_API_BASE = "http://localhost:5670/api/v2"
             DBGPT_API_KEY = "dbgpt"
             client = Client(api_base=DBGPT_API_BASE, api_key=DBGPT_API_KEY)
             res = await client.chat_stream(model="chatgpt_proxyllm", messages="Hello?")
@@ -242,7 +243,7 @@ class Client:
             incremental=incremental,
             enable_vis=enable_vis,
         )
-        async for chat_completion_response in self._chat_stream(request.dict()):
+        async for chat_completion_response in self._chat_stream(model_to_dict(request)):
             yield chat_completion_response
 
     async def _chat_stream(
@@ -262,6 +263,7 @@ class Client:
             headers={},
         ) as response:
             if response.status_code == 200:
+                sse_data = ""
                 async for line in response.aiter_lines():
                     try:
                         if line.strip() == "data: [DONE]":
@@ -277,7 +279,9 @@ class Client:
                             )
                             yield chat_completion_response
                     except Exception as e:
-                        raise e
+                        raise Exception(
+                            f"Failed to parse SSE data: {e}, sse_data: {sse_data}"
+                        )
 
             else:
                 try:

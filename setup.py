@@ -4,6 +4,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import urllib.request
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
@@ -18,7 +19,7 @@ with open("README.md", mode="r", encoding="utf-8") as fh:
 IS_DEV_MODE = os.getenv("IS_DEV_MODE", "true").lower() == "true"
 # If you modify the version, please modify the version in the following files:
 # dbgpt/_version.py
-DB_GPT_VERSION = os.getenv("DB_GPT_VERSION", "0.5.3")
+DB_GPT_VERSION = os.getenv("DB_GPT_VERSION", "0.5.4")
 
 BUILD_NO_CACHE = os.getenv("BUILD_NO_CACHE", "true").lower() == "true"
 LLAMA_CPP_GPU_ACCELERATION = (
@@ -29,6 +30,7 @@ BUILD_FROM_SOURCE_URL_FAST_CHAT = os.getenv(
     "BUILD_FROM_SOURCE_URL_FAST_CHAT", "git+https://github.com/lm-sys/FastChat.git"
 )
 BUILD_VERSION_OPENAI = os.getenv("BUILD_VERSION_OPENAI")
+INCLUDE_QUANTIZATION = os.getenv("INCLUDE_QUANTIZATION", "true").lower() == "true"
 
 
 def parse_requirements(file_name: str) -> List[str]:
@@ -40,15 +42,22 @@ def parse_requirements(file_name: str) -> List[str]:
         ]
 
 
-def get_latest_version(package_name: str, index_url: str, default_version: str):
-    python_command = shutil.which("python")
-    if not python_command:
-        python_command = shutil.which("python3")
-        if not python_command:
-            print("Python command not found.")
-            return default_version
+def find_python():
+    python_path = sys.executable
+    print(python_path)
+    if not python_path:
+        print("Python command not found.")
+        return None
+    return python_path
 
-    command = [
+
+def get_latest_version(package_name: str, index_url: str, default_version: str):
+    python_command = find_python()
+    if not python_command:
+        print("Python command not found.")
+        return default_version
+
+    command_index_versions = [
         python_command,
         "-m",
         "pip",
@@ -59,20 +68,40 @@ def get_latest_version(package_name: str, index_url: str, default_version: str):
         index_url,
     ]
 
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        print("Error executing command.")
-        print(result.stderr.decode())
-        return default_version
+    result_index_versions = subprocess.run(
+        command_index_versions, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    if result_index_versions.returncode == 0:
+        output = result_index_versions.stdout.decode()
+        lines = output.split("\n")
+        for line in lines:
+            if "Available versions:" in line:
+                available_versions = line.split(":")[1].strip()
+                latest_version = available_versions.split(",")[0].strip()
+                # Query for compatibility with the latest version of torch
+                if package_name == "torch" or "torchvision":
+                    latest_version = latest_version.split("+")[0]
+                return latest_version
+    else:
+        command_simulate_install = [
+            python_command,
+            "-m",
+            "pip",
+            "install",
+            f"{package_name}==",
+        ]
 
-    output = result.stdout.decode()
-    lines = output.split("\n")
-    for line in lines:
-        if "Available versions:" in line:
-            available_versions = line.split(":")[1].strip()
-            latest_version = available_versions.split(",")[0].strip()
+        result_simulate_install = subprocess.run(
+            command_simulate_install, stderr=subprocess.PIPE
+        )
+        print(result_simulate_install)
+        stderr_output = result_simulate_install.stderr.decode()
+        print(stderr_output)
+        match = re.search(r"from versions: (.+?)\)", stderr_output)
+        if match:
+            available_versions = match.group(1).split(", ")
+            latest_version = available_versions[-1].strip()
             return latest_version
-
     return default_version
 
 
@@ -113,6 +142,13 @@ class SetupSpec:
     def __init__(self) -> None:
         self.extras: dict = {}
         self.install_requires: List[str] = []
+
+    @property
+    def unique_extras(self) -> dict[str, list[str]]:
+        unique_extras = {}
+        for k, v in self.extras.items():
+            unique_extras[k] = list(set(v))
+        return unique_extras
 
 
 setup_spec = SetupSpec()
@@ -227,7 +263,7 @@ def _build_wheels(
     base_url: str = None,
     base_url_func: Callable[[str, str, str], str] = None,
     pkg_file_func: Callable[[str, str, str, str, OSType], str] = None,
-    supported_cuda_versions: List[str] = ["11.7", "11.8"],
+    supported_cuda_versions: List[str] = ["11.8", "12.1"],
 ) -> Optional[str]:
     """
     Build the URL for the package wheel file based on the package name, version, and CUDA version.
@@ -248,11 +284,17 @@ def _build_wheels(
     py_version = "cp" + "".join(py_version.split(".")[0:2])
     if os_type == OSType.DARWIN or not cuda_version:
         return None
-    if cuda_version not in supported_cuda_versions:
+
+    if cuda_version in supported_cuda_versions:
+        cuda_version = cuda_version
+    else:
         print(
-            f"Warnning: {pkg_name} supported cuda version: {supported_cuda_versions}, replace to {supported_cuda_versions[-1]}"
+            f"Warning: Your CUDA version {cuda_version} is not in our set supported_cuda_versions , we will use our set version."
         )
-        cuda_version = supported_cuda_versions[-1]
+        if cuda_version < "12.1":
+            cuda_version = supported_cuda_versions[0]
+        else:
+            cuda_version = supported_cuda_versions[-1]
 
     cuda_version = "cu" + cuda_version.replace(".", "")
     os_pkg_name = "linux_x86_64" if os_type == OSType.LINUX else "win_amd64"
@@ -273,48 +315,49 @@ def _build_wheels(
 
 
 def torch_requires(
-    torch_version: str = "2.0.1",
-    torchvision_version: str = "0.15.2",
-    torchaudio_version: str = "2.0.2",
+    torch_version: str = "2.2.1",
+    torchvision_version: str = "0.17.1",
+    torchaudio_version: str = "2.2.1",
 ):
+    os_type, _ = get_cpu_avx_support()
     torch_pkgs = [
         f"torch=={torch_version}",
         f"torchvision=={torchvision_version}",
         f"torchaudio=={torchaudio_version}",
     ]
-    torch_cuda_pkgs = []
-    os_type, _ = get_cpu_avx_support()
+    # Initialize torch_cuda_pkgs for non-Darwin OSes;
+    # it will be the same as torch_pkgs for Darwin or when no specific CUDA handling is needed
+    torch_cuda_pkgs = torch_pkgs[:]
+
     if os_type != OSType.DARWIN:
-        cuda_version = get_cuda_version()
-        if cuda_version:
-            supported_versions = ["11.7", "11.8"]
-            # torch_url = f"https://download.pytorch.org/whl/{cuda_version}/torch-{torch_version}+{cuda_version}-{py_version}-{py_version}-{os_pkg_name}.whl"
-            # torchvision_url = f"https://download.pytorch.org/whl/{cuda_version}/torchvision-{torchvision_version}+{cuda_version}-{py_version}-{py_version}-{os_pkg_name}.whl"
-            torch_url = _build_wheels(
-                "torch",
-                torch_version,
-                base_url_func=lambda v, x, y: f"https://download.pytorch.org/whl/{x}",
-                supported_cuda_versions=supported_versions,
-            )
-            torchvision_url = _build_wheels(
-                "torchvision",
-                torchvision_version,
-                base_url_func=lambda v, x, y: f"https://download.pytorch.org/whl/{x}",
-                supported_cuda_versions=supported_versions,
-            )
+        supported_versions = ["11.8", "12.1"]
+        base_url_func = lambda v, x, y: f"https://download.pytorch.org/whl/{x}"
+        torch_url = _build_wheels(
+            "torch",
+            torch_version,
+            base_url_func=base_url_func,
+            supported_cuda_versions=supported_versions,
+        )
+        torchvision_url = _build_wheels(
+            "torchvision",
+            torchvision_version,
+            base_url_func=base_url_func,
+            supported_cuda_versions=supported_versions,
+        )
+
+        # Cache and add CUDA-dependent packages if URLs are available
+        if torch_url:
             torch_url_cached = cache_package(
                 torch_url, "torch", os_type == OSType.WINDOWS
             )
+            torch_cuda_pkgs[0] = f"torch @ {torch_url_cached}"
+        if torchvision_url:
             torchvision_url_cached = cache_package(
                 torchvision_url, "torchvision", os_type == OSType.WINDOWS
             )
+            torch_cuda_pkgs[1] = f"torchvision @ {torchvision_url_cached}"
 
-            torch_cuda_pkgs = [
-                f"torch @ {torch_url_cached}",
-                f"torchvision @ {torchvision_url_cached}",
-                f"torchaudio=={torchaudio_version}",
-            ]
-
+    # Assuming 'setup_spec' is a dictionary where we're adding these dependencies
     setup_spec.extras["torch"] = torch_pkgs
     setup_spec.extras["torch_cpu"] = torch_pkgs
     setup_spec.extras["torch_cuda"] = torch_cuda_pkgs
@@ -322,6 +365,7 @@ def torch_requires(
 
 def llama_cpp_python_cuda_requires():
     cuda_version = get_cuda_version()
+    supported_cuda_versions = ["11.8", "12.1"]
     device = "cpu"
     if not cuda_version:
         print("CUDA not support, use cpu version")
@@ -330,7 +374,10 @@ def llama_cpp_python_cuda_requires():
         print("Disable GPU acceleration")
         return
     # Supports GPU acceleration
-    device = "cu" + cuda_version.replace(".", "")
+    if cuda_version <= "11.8" and not None:
+        device = "cu" + supported_cuda_versions[0].replace(".", "")
+    else:
+        device = "cu" + supported_cuda_versions[-1].replace(".", "")
     os_type, cpu_avx = get_cpu_avx_support()
     print(f"OS: {os_type}, cpu avx: {cpu_avx}")
     supported_os = [OSType.WINDOWS, OSType.LINUX]
@@ -346,7 +393,7 @@ def llama_cpp_python_cuda_requires():
         cpu_device = "basic"
     device += cpu_device
     base_url = "https://github.com/jllllll/llama-cpp-python-cuBLAS-wheels/releases/download/textgen-webui"
-    llama_cpp_version = "0.2.10"
+    llama_cpp_version = "0.2.26"
     py_version = "cp310"
     os_pkg_name = "manylinux_2_31_x86_64" if os_type == OSType.LINUX else "win_amd64"
     extra_index_url = f"{base_url}/llama_cpp_python_cuda-{llama_cpp_version}+{device}-{py_version}-{py_version}-{os_pkg_name}.whl"
@@ -366,14 +413,14 @@ def core_requires():
         "importlib-resources==5.12.0",
         "python-dotenv==1.0.0",
         "cachetools",
-        "pydantic<2,>=1",
+        "pydantic>=2.6.0",
         # For AWEL type checking
         "typeguard",
     ]
     # For DB-GPT python client SDK
     setup_spec.extras["client"] = setup_spec.extras["core"] + [
         "httpx",
-        "fastapi==0.98.0",
+        "fastapi>=0.100.0",
     ]
     # Simple command line dependencies
     setup_spec.extras["cli"] = setup_spec.extras["client"] + [
@@ -384,10 +431,18 @@ def core_requires():
         "tomlkit",
         "rich",
     ]
+    # Agent dependencies
+    setup_spec.extras["agent"] = setup_spec.extras["cli"] + [
+        "termcolor",
+        # https://github.com/eosphoros-ai/DB-GPT/issues/551
+        # TODO: remove pandas dependency
+        "pandas==2.0.3",
+    ]
+
     # Just use by DB-GPT internal, we should find the smallest dependency set for run
     # we core unit test.
     # The dependency "framework" is too large for now.
-    setup_spec.extras["simple_framework"] = setup_spec.extras["cli"] + [
+    setup_spec.extras["simple_framework"] = setup_spec.extras["agent"] + [
         "jinja2",
         "uvicorn",
         "shortuuid",
@@ -417,8 +472,6 @@ def core_requires():
     setup_spec.extras["framework"] = setup_spec.extras["simple_framework"] + [
         "coloredlogs",
         "seaborn",
-        # https://github.com/eosphoros-ai/DB-GPT/issues/551
-        "pandas==2.0.3",
         "auto-gpt-plugin-template",
         "gTTS==2.3.1",
         "pymysql",
@@ -445,8 +498,7 @@ def knowledge_requires():
     """
     setup_spec.extras["rag"] = setup_spec.extras["vstore"] + [
         "langchain>=0.0.286",
-        "spacy==3.5.3",
-        "chromadb==0.4.10",
+        "spacy>=3.7",
         "markdown",
         "bs4",
         "python-pptx",
@@ -493,9 +545,17 @@ def quantization_requires():
         # autoawq requirements:
         # 1. Compute Capability 7.5 (sm75). Turing and later architectures are supported.
         # 2. CUDA Toolkit 11.8 and later.
-        quantization_pkgs.extend(["autoawq", _build_autoawq_requires(), "optimum"])
+        cuda_version = get_cuda_version()
+        autoawq_latest_version = get_latest_version("autoawq", "", "0.2.4")
+        if cuda_version is None or cuda_version == "12.1":
+            quantization_pkgs.extend(["autoawq", _build_autoawq_requires(), "optimum"])
+        else:
+            # TODO(yyhhyy): Add autoawq install method for CUDA version 11.8
+            quantization_pkgs.extend(["autoawq", _build_autoawq_requires(), "optimum"])
 
-    setup_spec.extras["quantization"] = ["cpm_kernels"] + quantization_pkgs
+    setup_spec.extras["quantization"] = (
+        ["cpm_kernels"] + quantization_pkgs + setup_spec.extras["bitsandbytes"]
+    )
 
 
 def all_vector_store_requires():
@@ -503,9 +563,23 @@ def all_vector_store_requires():
     pip install "dbgpt[vstore]"
     """
     setup_spec.extras["vstore"] = [
-        "pymilvus",
+        "chromadb>=0.4.22",
+    ]
+    setup_spec.extras["vstore_weaviate"] = setup_spec.extras["vstore"] + [
+        # "protobuf",
+        # "grpcio",
+        # weaviate depends on grpc which version is very low, we should install it
+        # manually.
         "weaviate-client",
     ]
+    setup_spec.extras["vstore_milvus"] = setup_spec.extras["vstore"] + [
+        "pymilvus",
+    ]
+    setup_spec.extras["vstore_all"] = (
+        setup_spec.extras["vstore"]
+        + setup_spec.extras["vstore_weaviate"]
+        + setup_spec.extras["vstore_milvus"]
+    )
 
 
 def all_datasource_requires():
@@ -579,7 +653,6 @@ def default_requires():
         # "tokenizers==0.13.3",
         "tokenizers>=0.14",
         "accelerate>=0.20.3",
-        "protobuf==3.20.3",
         "zhipuai",
         "dashscope",
         "chardet",
@@ -589,7 +662,9 @@ def default_requires():
     setup_spec.extras["default"] += setup_spec.extras["rag"]
     setup_spec.extras["default"] += setup_spec.extras["datasource"]
     setup_spec.extras["default"] += setup_spec.extras["torch"]
-    setup_spec.extras["default"] += setup_spec.extras["quantization"]
+    if INCLUDE_QUANTIZATION:
+        # Add quantization extra to default, default is True
+        setup_spec.extras["default"] += setup_spec.extras["quantization"]
     setup_spec.extras["default"] += setup_spec.extras["cache"]
 
 
@@ -636,6 +711,8 @@ else:
             "dbgpt",
             "dbgpt._private",
             "dbgpt._private.*",
+            "dbgpt.agent",
+            "dbgpt.agent.*",
             "dbgpt.cli",
             "dbgpt.cli.*",
             "dbgpt.client",
@@ -660,6 +737,8 @@ else:
             "dbgpt.storage.*",
             "dbgpt.util",
             "dbgpt.util.*",
+            "dbgpt.vis",
+            "dbgpt.vis.*",
         ],
     )
 
@@ -679,7 +758,7 @@ setuptools.setup(
     url="https://github.com/eosphoros-ai/DB-GPT",
     license="https://opensource.org/license/mit/",
     python_requires=">=3.10",
-    extras_require=setup_spec.extras,
+    extras_require=setup_spec.unique_extras,
     entry_points={
         "console_scripts": [
             "dbgpt=dbgpt.cli.cli_scripts:main",

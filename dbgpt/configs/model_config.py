@@ -67,9 +67,15 @@ LLM_MODEL_CONFIG = {
     "spark_proxyllm": "spark_proxyllm",
     # https://platform.lingyiwanwu.com/docs/
     "yi_proxyllm": "yi_proxyllm",
+    # https://platform.moonshot.cn/docs/
+    "moonshot_proxyllm": "moonshot_proxyllm",
     "llama-2-7b": os.path.join(MODEL_PATH, "Llama-2-7b-chat-hf"),
     "llama-2-13b": os.path.join(MODEL_PATH, "Llama-2-13b-chat-hf"),
     "llama-2-70b": os.path.join(MODEL_PATH, "Llama-2-70b-chat-hf"),
+    # https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
+    "meta-llama-3-8b-instruct": os.path.join(MODEL_PATH, "Meta-Llama-3-8B-Instruct"),
+    # https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct
+    "meta-llama-3-70b-instruct": os.path.join(MODEL_PATH, "Meta-Llama-3-70B-Instruct"),
     "baichuan-13b": os.path.join(MODEL_PATH, "Baichuan-13B-Chat"),
     # please rename "fireballoon/baichuan-vicuna-chinese-7b" to "baichuan-7b"
     "baichuan-7b": os.path.join(MODEL_PATH, "baichuan-7b"),
@@ -106,6 +112,10 @@ LLM_MODEL_CONFIG = {
     # https://huggingface.co/Qwen/Qwen1.5-32B-Chat
     "qwen1.5-32b-chat": os.path.join(MODEL_PATH, "Qwen1.5-32B-Chat"),
     "qwen1.5-72b-chat": os.path.join(MODEL_PATH, "Qwen1.5-72B-Chat"),
+    # https://huggingface.co/Qwen/CodeQwen1.5-7B-Chat
+    "codeqwen1.5-7b-chat": os.path.join(MODEL_PATH, "CodeQwen1.5-7B-Chat"),
+    # https://huggingface.co/Qwen/Qwen1.5-MoE-A2.7B-Chat
+    "qwen1.5-moe-a2.7b-chat": os.path.join(MODEL_PATH, "Qwen1.5-MoE-A2.7B-Chat"),
     # (Llama2 based) We only support WizardLM-13B-V1.2 for now, which is trained from Llama-2 13b, see https://huggingface.co/WizardLM/WizardLM-13B-V1.2
     "wizardlm-13b": os.path.join(MODEL_PATH, "WizardLM-13B-V1.2"),
     # wget https://huggingface.co/TheBloke/vicuna-13B-v1.5-GGUF/resolve/main/vicuna-13b-v1.5.Q4_K_M.gguf -O models/ggml-model-q4_0.gguf

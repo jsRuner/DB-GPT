@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Awaitable, Callable, Iterator
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from dbgpt.component import SystemApp
@@ -28,6 +28,7 @@ from dbgpt.model.cluster.registry import ModelRegistry
 from dbgpt.model.cluster.worker_base import ModelWorker
 from dbgpt.model.parameter import ModelWorkerParameters, WorkerType
 from dbgpt.model.utils.llm_utils import list_supported_models
+from dbgpt.util.fastapi import create_app, register_event_handler
 from dbgpt.util.parameter_utils import (
     EnvArgumentParser,
     ParameterDescription,
@@ -829,7 +830,7 @@ def _setup_fastapi(
     worker_params: ModelWorkerParameters, app=None, ignore_exception: bool = False
 ):
     if not app:
-        app = FastAPI()
+        app = create_app()
         setup_http_service_logging()
 
     if worker_params.standalone:
@@ -850,7 +851,6 @@ def _setup_fastapi(
         initialize_controller(app=app)
         app.include_router(controller_router, prefix="/api")
 
-    @app.on_event("startup")
     async def startup_event():
         async def start_worker_manager():
             try:
@@ -865,10 +865,11 @@ def _setup_fastapi(
         # the fastapi app (registered to the controller)
         asyncio.create_task(start_worker_manager())
 
-    @app.on_event("shutdown")
-    async def startup_event():
+    async def shutdown_event():
         await worker_manager.stop(ignore_exception=ignore_exception)
 
+    register_event_handler(app, "startup", startup_event)
+    register_event_handler(app, "shutdown", shutdown_event)
     return app
 
 
@@ -1022,7 +1023,7 @@ def initialize_worker_manager_in_client(
     model_path: str = None,
     run_locally: bool = True,
     controller_addr: str = None,
-    local_port: int = 5000,
+    local_port: int = 5670,
     embedding_model_name: str = None,
     embedding_model_path: str = None,
     start_listener: Callable[["WorkerManager"], None] = None,
@@ -1126,8 +1127,8 @@ def run_worker_manager(
 
     system_app = SystemApp(app)
     initialize_tracer(
-        system_app,
         os.path.join(LOGDIR, worker_params.tracer_file),
+        system_app=system_app,
         root_operation_name="DB-GPT-WorkerManager-Entry",
         tracer_storage_cls=worker_params.tracer_storage_cls,
     )

@@ -4,11 +4,12 @@ import math
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from dbgpt._private.pydantic import BaseModel, Field
+from dbgpt._private.pydantic import BaseModel, ConfigDict, Field, model_to_dict
 from dbgpt.core import Chunk, Embeddings
 from dbgpt.core.awel.flow import Parameter
+from dbgpt.storage.vector_store.filters import MetadataFilters
 from dbgpt.util.i18n_utils import _
 
 logger = logging.getLogger(__name__)
@@ -86,10 +87,7 @@ _COMMON_PARAMETERS = [
 class VectorStoreConfig(BaseModel):
     """Vector store config."""
 
-    class Config:
-        """Config for BaseModel."""
-
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str = Field(
         default="dbgpt_collection",
@@ -120,6 +118,10 @@ class VectorStoreConfig(BaseModel):
         description="The max number of threads to use. Default is 1. If you set this "
         "bigger than 1, please make sure your vector store is thread-safe.",
     )
+
+    def to_dict(self, **kwargs) -> Dict[str, Any]:
+        """Convert to dict."""
+        return model_to_dict(self, **kwargs)
 
 
 class VectorStoreBase(ABC):
@@ -176,13 +178,15 @@ class VectorStoreBase(ABC):
         return ids
 
     @abstractmethod
-    def similar_search(self, text: str, topk: int) -> List[Chunk]:
+    def similar_search(
+        self, text: str, topk: int, filters: Optional[MetadataFilters] = None
+    ) -> List[Chunk]:
         """Similar search in vector database.
 
         Args:
             text(str): The query text.
             topk(int): The number of similar documents to return.
-
+            filters(Optional[MetadataFilters]): metadata filters.
         Return:
             List[Chunk]: The similar documents.
         """
@@ -190,7 +194,11 @@ class VectorStoreBase(ABC):
 
     @abstractmethod
     def similar_search_with_scores(
-        self, text, topk, score_threshold: float
+        self,
+        text,
+        topk,
+        score_threshold: float,
+        filters: Optional[MetadataFilters] = None,
     ) -> List[Chunk]:
         """Similar search with scores in vector database.
 
@@ -199,6 +207,7 @@ class VectorStoreBase(ABC):
             topk(int): The number of similar documents to return.
             score_threshold(int): score_threshold: Optional, a floating point value
                 between 0 to 1
+            filters(Optional[MetadataFilters]): metadata filters.
         Return:
             List[Chunk]: The similar documents.
         """
@@ -223,6 +232,15 @@ class VectorStoreBase(ABC):
         Args:
             vector_name(str): The name of vector to delete.
         """
+        pass
+
+    def convert_metadata_filters(self, filters: MetadataFilters) -> Any:
+        """Convert metadata filters to vector store filters.
+
+        Args:
+            filters: (Optional[MetadataFilters]) metadata filters.
+        """
+        raise NotImplementedError
 
     def _normalization_vectors(self, vectors):
         """Return L2-normalization vectors to scale[0,1].

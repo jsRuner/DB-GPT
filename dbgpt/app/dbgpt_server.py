@@ -5,7 +5,6 @@ from typing import List
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
 
 # fastapi import time cost about 0.05s
 from fastapi.staticfiles import StaticFiles
@@ -24,7 +23,7 @@ from dbgpt.app.component_configs import initialize_components
 from dbgpt.component import SystemApp
 from dbgpt.configs.model_config import EMBEDDING_MODEL_CONFIG, LLM_MODEL_CONFIG, LOGDIR
 from dbgpt.serve.core import add_exception_handler
-from dbgpt.util.fastapi import PriorityAPIRouter
+from dbgpt.util.fastapi import create_app, replace_router
 from dbgpt.util.i18n_utils import _, set_default_language
 from dbgpt.util.parameter_utils import _get_dict_from_obj
 from dbgpt.util.system_utils import get_system_info
@@ -45,16 +44,14 @@ static_file_path = os.path.join(ROOT_PATH, "dbgpt", "app/static")
 CFG = Config()
 set_default_language(CFG.LANGUAGE)
 
-
-app = FastAPI(
+app = create_app(
     title=_("DB-GPT Open API"),
     description=_("DB-GPT Open API"),
     version=version,
     openapi_tags=[],
 )
 # Use custom router to support priority
-app.router = PriorityAPIRouter()
-app.setup()
+replace_router(app)
 
 app.mount(
     "/swagger_static",
@@ -140,9 +137,9 @@ def initialize_app(param: WebServerParameters = None, args: List[str] = None):
 
     model_name = param.model_name or CFG.LLM_MODEL
     param.model_name = model_name
-    param.port = param.port or CFG.WEB_SERVER_PORT
+    param.port = param.port or CFG.DBGPT_WEBSERVER_PORT
     if not param.port:
-        param.port = 5000
+        param.port = 5670
 
     print(param)
 
@@ -223,8 +220,8 @@ def run_webserver(param: WebServerParameters = None):
     if not param:
         param = _get_webserver_params()
     initialize_tracer(
-        system_app,
         os.path.join(LOGDIR, param.tracer_file),
+        system_app=system_app,
         tracer_storage_cls=param.tracer_storage_cls,
     )
 

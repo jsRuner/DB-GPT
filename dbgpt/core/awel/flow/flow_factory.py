@@ -6,7 +6,13 @@ from contextlib import suppress
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 
-from dbgpt._private.pydantic import BaseModel, Field, root_validator, validator
+from dbgpt._private.pydantic import (
+    BaseModel,
+    Field,
+    field_validator,
+    model_to_dict,
+    model_validator,
+)
 from dbgpt.core.awel.dag.base import DAG, DAGNode
 
 from .base import (
@@ -17,9 +23,11 @@ from .base import (
     _get_operator_class,
     _get_resource_class,
 )
+from .compat import get_new_class_name
 from .exceptions import (
     FlowClassMetadataException,
     FlowDAGMetadataException,
+    FlowException,
     FlowMetadataException,
 )
 
@@ -71,7 +79,8 @@ class FlowNodeData(BaseModel):
         ..., description="Absolute position of the node"
     )
 
-    @validator("data", pre=True)
+    @field_validator("data", mode="before")
+    @classmethod
     def parse_data(cls, value: Any):
         """Parse the data."""
         if isinstance(value, dict):
@@ -121,9 +130,12 @@ class FlowEdgeData(BaseModel):
         examples=["buttonedge"],
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata."""
+        if not isinstance(values, dict):
+            return values
         if (
             "source_order" not in values
             and "source_handle" in values
@@ -313,9 +325,12 @@ class FlowPanel(BaseModel):
         examples=["2021-08-01 12:00:00", "2021-08-01 12:00:01", "2021-08-01 12:00:02"],
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata."""
+        if not isinstance(values, dict):
+            return values
         label = values.get("label")
         name = values.get("name")
         flow_category = str(values.get("flow_category", ""))
@@ -326,6 +341,10 @@ class FlowPanel(BaseModel):
                 name = str(flow_category) + "_" + name
             values["name"] = name
         return values
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict."""
+        return model_to_dict(self)
 
 
 class FlowFactory:
@@ -606,9 +625,26 @@ class FlowFactory:
                     f"{metadata_cls}"
                 )
             except ImportError as e:
-                raise FlowClassMetadataException(
-                    f"Import {node_data.type_cls} failed: {e}"
-                )
+                raise_error = True
+                new_type_cls: Optional[str] = None
+                try:
+                    new_type_cls = get_new_class_name(node_data.type_cls)
+                    if new_type_cls:
+                        metadata_cls = import_from_string(new_type_cls)
+                        logger.info(
+                            f"Import {new_type_cls} successfully, metadata_cls is : "
+                            f"{metadata_cls}"
+                        )
+                        raise_error = False
+                except ImportError as ex:
+                    raise FlowClassMetadataException(
+                        f"Import {node_data.type_cls} with new type {new_type_cls} "
+                        f"failed: {ex}"
+                    )
+                if raise_error:
+                    raise FlowClassMetadataException(
+                        f"Import {node_data.type_cls} failed: {e}"
+                    )
 
 
 def _topological_sort(
@@ -720,5 +756,5 @@ def fill_flow_panel(flow_panel: FlowPanel):
                     param.default = new_param.default
                     param.placeholder = new_param.placeholder
 
-        except ValueError as e:
+        except (FlowException, ValueError) as e:
             logger.warning(f"Unable to fill the flow panel: {e}")

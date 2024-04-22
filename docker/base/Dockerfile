@@ -1,4 +1,4 @@
-ARG BASE_IMAGE="nvidia/cuda:11.8.0-runtime-ubuntu22.04"
+ARG BASE_IMAGE="nvidia/cuda:12.1.0-runtime-ubuntu22.04"
 
 FROM ${BASE_IMAGE}
 ARG BASE_IMAGE
@@ -62,6 +62,6 @@ RUN (if [ "${LANGUAGE}" = "zh" ]; \
     fi;)
 
 ENV PYTHONPATH "/app:$PYTHONPATH"
-EXPOSE 5000
+EXPOSE 5670
 
 CMD ["dbgpt", "start", "webserver"]

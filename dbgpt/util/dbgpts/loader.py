@@ -3,12 +3,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Type, TypeVar, cast
 
 import schedule
 import tomlkit
 
-from dbgpt._private.pydantic import BaseModel, Field, root_validator
+from dbgpt._private.pydantic import BaseModel, ConfigDict, Field, model_validator
 from dbgpt.component import BaseComponent, SystemApp
 from dbgpt.core.awel.flow.flow_factory import FlowPanel
 from dbgpt.util.dbgpts.base import (
@@ -18,11 +18,11 @@ from dbgpt.util.dbgpts.base import (
 )
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class BasePackage(BaseModel):
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str = Field(..., description="The name of the package")
     label: str = Field(..., description="The label of the package")
@@ -47,9 +47,12 @@ class BasePackage(BaseModel):
     def build_from(cls, values: Dict[str, Any], ext_dict: Dict[str, Any]):
         return cls(**values)
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-fill the definition_file"""
+        if not isinstance(values, dict):
+            return values
         import importlib.resources as pkg_resources
 
         name = values.get("name")
@@ -68,9 +71,35 @@ class BasePackage(BaseModel):
     def abs_definition_file(self) -> str:
         return str(Path(self.path) / self.definition_file)
 
+    @classmethod
+    def load_module_class(
+        cls, values: Dict[str, Any], expected_cls: Type[T]
+    ) -> List[Type[T]]:
+        import importlib.resources as pkg_resources
+
+        from dbgpt.core.awel.dag.loader import _load_modules_from_file
+
+        name = values.get("name")
+        root = values.get("root")
+        if not name:
+            raise ValueError("The name is required")
+        if not root:
+            raise ValueError("The root is required")
+        if root not in sys.path:
+            sys.path.append(root)
+        with pkg_resources.path(name, "__init__.py") as path:
+            mods = _load_modules_from_file(str(path), name, show_log=False)
+            all_cls = [_get_classes_from_module(m) for m in mods]
+            module_cls = []
+            for list_cls in all_cls:
+                for c in list_cls:
+                    if issubclass(c, expected_cls):
+                        module_cls.append(c)
+            return module_cls
+
 
 class FlowPackage(BasePackage):
-    package_type = "flow"
+    package_type: str = "flow"
 
     @classmethod
     def build_from(
@@ -99,7 +128,7 @@ class FlowJsonPackage(FlowPackage):
 
 
 class OperatorPackage(BasePackage):
-    package_type = "operator"
+    package_type: str = "operator"
 
     operators: List[type] = Field(
         default_factory=list, description="The operators of the package"
@@ -107,24 +136,24 @@ class OperatorPackage(BasePackage):
 
     @classmethod
     def build_from(cls, values: Dict[str, Any], ext_dict: Dict[str, Any]):
-        import importlib.resources as pkg_resources
-
         from dbgpt.core.awel import BaseOperator
-        from dbgpt.core.awel.dag.loader import _load_modules_from_file
 
-        name = values.get("name")
-        root = values.get("root")
-        if root not in sys.path:
-            sys.path.append(root)
-        with pkg_resources.path(name, "__init__.py") as path:
-            mods = _load_modules_from_file(str(path), name, show_log=False)
-            all_cls = [_get_classes_from_module(m) for m in mods]
-            operators = []
-            for list_cls in all_cls:
-                for c in list_cls:
-                    if issubclass(c, BaseOperator):
-                        operators.append(c)
-            values["operators"] = operators
+        values["operators"] = cls.load_module_class(values, BaseOperator)
+        return cls(**values)
+
+
+class AgentPackage(BasePackage):
+    package_type: str = "agent"
+
+    agents: List[type] = Field(
+        default_factory=list, description="The agents of the package"
+    )
+
+    @classmethod
+    def build_from(cls, values: Dict[str, Any], ext_dict: Dict[str, Any]):
+        from dbgpt.agent import ConversableAgent
+
+        values["agents"] = cls.load_module_class(values, ConversableAgent)
         return cls(**values)
 
 
@@ -153,11 +182,14 @@ def _parse_package_metadata(package: InstalledPackage) -> BasePackage:
     pkg_dict = {}
     for key, value in metadata.items():
         if key == "flow":
-            pkg_dict = value
+            pkg_dict = {k: v for k, v in value.items()}
             pkg_dict["package_type"] = "flow"
         elif key == "operator":
             pkg_dict = {k: v for k, v in value.items()}
             pkg_dict["package_type"] = "operator"
+        elif key == "agent":
+            pkg_dict = {k: v for k, v in value.items()}
+            pkg_dict["package_type"] = "agent"
         else:
             ext_metadata[key] = value
     pkg_dict["root"] = package.root
@@ -167,6 +199,8 @@ def _parse_package_metadata(package: InstalledPackage) -> BasePackage:
         return FlowPackage.build_from(pkg_dict, ext_metadata)
     elif pkg_dict["package_type"] == "operator":
         return OperatorPackage.build_from(pkg_dict, ext_metadata)
+    elif pkg_dict["package_type"] == "agent":
+        return AgentPackage.build_from(pkg_dict, ext_metadata)
     else:
         raise ValueError(
             f"Unsupported package package_type: {pkg_dict['package_type']}"
@@ -208,7 +242,7 @@ def _load_package_from_path(path: str):
 class DBGPTsLoader(BaseComponent):
     """The loader of the dbgpts packages"""
 
-    name = "dbgpt_dbgpts_loader"
+    name: str = "dbgpt_dbgpts_loader"
 
     def __init__(
         self,
@@ -243,6 +277,7 @@ class DBGPTsLoader(BaseComponent):
                 )
             for package in packages:
                 self._packages[package.name] = package
+                self._register_packages(package)
         except Exception as e:
             logger.warning(f"Load dbgpts package error: {e}")
 
@@ -268,3 +303,16 @@ class DBGPTsLoader(BaseComponent):
             }
             panels.append(FlowPanel(**dict_value))
         return panels
+
+    def _register_packages(self, package: BasePackage):
+        if package.package_type == "agent":
+            from dbgpt.agent import ConversableAgent, get_agent_manager
+
+            agent_manager = get_agent_manager(self._system_app)
+            pkg = cast(AgentPackage, package)
+            for agent_cls in pkg.agents:
+                if issubclass(agent_cls, ConversableAgent):
+                    try:
+                        agent_manager.register_agent(agent_cls, ignore_duplicate=True)
+                    except ValueError as e:
+                        logger.warning(f"Register agent {agent_cls} error: {e}")

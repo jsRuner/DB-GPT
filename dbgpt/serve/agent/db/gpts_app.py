@@ -5,11 +5,11 @@ from datetime import datetime
 from itertools import groupby
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint
 
+from dbgpt._private.pydantic import BaseModel, ConfigDict, Field, model_to_json
+from dbgpt.agent.plan.awel.team_awel_layout import AWELTeamContext
 from dbgpt.agent.resource.resource_api import AgentResource
-from dbgpt.serve.agent.model import AwelTeamContext
 from dbgpt.serve.agent.team.base import TeamMode
 from dbgpt.storage.metadata import BaseDao, Model
 
@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class GptsAppDetail(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     app_code: Optional[str] = None
     app_name: Optional[str] = None
     agent_name: Optional[str] = None
@@ -27,11 +29,6 @@ class GptsAppDetail(BaseModel):
     llm_strategy_value: Optional[str] = None
     created_at: datetime = datetime.now()
     updated_at: datetime = datetime.now()
-
-    class Config:
-        """Configuration for this pydantic object."""
-
-        arbitrary_types_allowed = True
 
     def to_dict(self):
         return {k: self._serialize(v) for k, v in self.__dict__.items()}
@@ -60,7 +57,7 @@ class GptsAppDetail(BaseModel):
             app_name=d["app_name"],
             agent_name=d["agent_name"],
             node_id=d["node_id"],
-            resources=AgentResource.from_josn_list_str(d.get("resources", None)),
+            resources=AgentResource.from_json_list_str(d.get("resources", None)),
             prompt_template=d.get("prompt_template", None),
             llm_strategy=d.get("llm_strategy", None),
             llm_strategy_value=llm_strategy_value,
@@ -70,7 +67,7 @@ class GptsAppDetail(BaseModel):
 
     @classmethod
     def from_entity(cls, entity):
-        resources = AgentResource.from_josn_list_str(entity.resources)
+        resources = AgentResource.from_json_list_str(entity.resources)
         return cls(
             app_code=entity.app_code,
             app_name=entity.app_name,
@@ -86,12 +83,14 @@ class GptsAppDetail(BaseModel):
 
 
 class GptsApp(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     app_code: Optional[str] = None
     app_name: Optional[str] = None
     app_describe: Optional[str] = None
     team_mode: Optional[str] = None
     language: Optional[str] = None
-    team_context: Optional[Union[str, AwelTeamContext]] = None
+    team_context: Optional[Union[str, AWELTeamContext]] = None
     user_code: Optional[str] = None
     sys_code: Optional[str] = None
     is_collected: Optional[str] = None
@@ -99,11 +98,6 @@ class GptsApp(BaseModel):
     created_at: datetime = datetime.now()
     updated_at: datetime = datetime.now()
     details: List[GptsAppDetail] = []
-
-    class Config:
-        """Configuration for this pydantic object."""
-
-        arbitrary_types_allowed = True
 
     def to_dict(self):
         return {k: self._serialize(v) for k, v in self.__dict__.items()}
@@ -146,7 +140,9 @@ class GptsAppResponse(BaseModel):
     total_count: Optional[int] = 0
     total_page: Optional[int] = 0
     current_page: Optional[int] = 0
-    app_list: Optional[List[GptsApp]] = []
+    app_list: Optional[List[GptsApp]] = Field(
+        default_factory=list, description="app list"
+    )
 
 
 class GptsAppCollection(BaseModel):
@@ -207,7 +203,8 @@ class GptsAppEntity(Model):
     team_context = Column(
         Text,
         nullable=True,
-        comment="The execution logic and team member content that teams with different working modes rely on",
+        comment="The execution logic and team member content that teams with different "
+        "working modes rely on",
     )
 
     user_code = Column(String(255), nullable=True, comment="user code")
@@ -560,26 +557,26 @@ class GptsAppDao(BaseDao):
             return True
 
 
-def _parse_team_context(team_context: Optional[Union[str, AwelTeamContext]] = None):
+def _parse_team_context(team_context: Optional[Union[str, AWELTeamContext]] = None):
     """
     parse team_context to str
     """
-    if isinstance(team_context, AwelTeamContext):
-        return team_context.json()
+    if isinstance(team_context, AWELTeamContext):
+        return model_to_json(team_context)
     return team_context
 
 
 def _load_team_context(
     team_mode: str = None, team_context: str = None
-) -> Union[str, AwelTeamContext]:
+) -> Union[str, AWELTeamContext]:
     """
-    load team_context to str or AwelTeamContext
+    load team_context to str or AWELTeamContext
     """
     if team_mode is not None:
         match team_mode:
             case TeamMode.AWEL_LAYOUT.value:
                 try:
-                    awel_team_ctx = AwelTeamContext(**json.loads(team_context))
+                    awel_team_ctx = AWELTeamContext(**json.loads(team_context))
                     return awel_team_ctx
                 except Exception as ex:
                     logger.info(

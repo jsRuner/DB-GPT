@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from fastapi import File, UploadFile
 
-from dbgpt._private.pydantic import BaseModel, Field
+from dbgpt._private.pydantic import BaseModel, ConfigDict, Field
 from dbgpt.rag.chunk_manager import ChunkParameters
 
 
@@ -60,7 +60,7 @@ class ChatCompletionRequestBody(BaseModel):
         "or in full each time. "
         "If this parameter is not provided, the default is full return.",
     )
-    enable_vis: str = Field(
+    enable_vis: bool = Field(
         default=True, description="response content whether to output vis label"
     )
 
@@ -75,8 +75,8 @@ class ChatMode(Enum):
     CHAT_DATA = "chat_data"
 
 
-class AwelTeamModel(BaseModel):
-    """Awel team model."""
+class AWELTeamModel(BaseModel):
+    """AWEL team model."""
 
     dag_id: str = Field(
         ...,
@@ -137,7 +137,7 @@ class AgentResourceType(Enum):
     TextFile = "text_file"
     ExcelFile = "excel_file"
     ImageFile = "image_file"
-    AwelFlow = "awel_flow"
+    AWELFlow = "awel_flow"
 
 
 class AgentResourceModel(BaseModel):
@@ -206,7 +206,7 @@ class AppModel(BaseModel):
     app_describe: Optional[str] = Field(None, title="app describe")
     team_mode: Optional[str] = Field(None, title="team mode")
     language: Optional[str] = Field("en", title="language")
-    team_context: Optional[Union[str, AwelTeamModel]] = Field(
+    team_context: Optional[Union[str, AWELTeamModel]] = Field(
         None, title="team context"
     )
     user_code: Optional[str] = Field(None, title="user code")
@@ -266,6 +266,8 @@ class DocumentModel(BaseModel):
 
 class SyncModel(BaseModel):
     """Sync model."""
+
+    model_config = ConfigDict(protected_namespaces=())
 
     """doc_id: doc id"""
     doc_id: str = Field(None, description="The doc id")

@@ -7,7 +7,13 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union, cast
 
-from dbgpt._private.pydantic import BaseModel, Field, ValidationError, root_validator
+from dbgpt._private.pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    model_to_dict,
+    model_validator,
+)
 from dbgpt.core.awel.util.parameter_util import BaseDynamicOptions, OptionValue
 from dbgpt.core.interface.serialization import Serializable
 
@@ -46,6 +52,13 @@ def _get_type_name(type_: Type[Any]) -> str:
     return type_name
 
 
+def _register_alias_types(type_: Type[Any], alias_ids: Optional[List[str]] = None):
+    if alias_ids:
+        for alias_id in alias_ids:
+            if alias_id not in _TYPE_REGISTRY:
+                _TYPE_REGISTRY[alias_id] = type_
+
+
 def _get_type_cls(type_name: str) -> Type[Any]:
     """Get the type class by the type name.
 
@@ -58,9 +71,15 @@ def _get_type_cls(type_name: str) -> Type[Any]:
     Raises:
         ValueError: If the type is not registered.
     """
-    if type_name not in _TYPE_REGISTRY:
+    from .compat import get_new_class_name
+
+    new_cls = get_new_class_name(type_name)
+    if type_name in _TYPE_REGISTRY:
+        return _TYPE_REGISTRY[type_name]
+    elif new_cls and new_cls in _TYPE_REGISTRY:
+        return _TYPE_REGISTRY[new_cls]
+    else:
         raise ValueError(f"Type {type_name} not registered.")
-    return _TYPE_REGISTRY[type_name]
 
 
 # Register the basic types.
@@ -108,6 +127,7 @@ class _CategoryDetail:
 
 _OPERATOR_CATEGORY_DETAIL = {
     "trigger": _CategoryDetail("Trigger", "Trigger your AWEL flow"),
+    "sender": _CategoryDetail("Sender", "Send the data to the target"),
     "llm": _CategoryDetail("LLM", "Invoke LLM model"),
     "conversion": _CategoryDetail("Conversion", "Handle the conversion"),
     "output_parser": _CategoryDetail("Output Parser", "Parse the output of LLM model"),
@@ -121,6 +141,7 @@ class OperatorCategory(str, Enum):
     """The category of the operator."""
 
     TRIGGER = "trigger"
+    SENDER = "sender"
     LLM = "llm"
     CONVERSION = "conversion"
     OUTPUT_PARSER = "output_parser"
@@ -266,7 +287,7 @@ class TypeMetadata(BaseModel):
 
     def new(self: TM) -> TM:
         """Copy the metadata."""
-        return self.__class__(**self.dict())
+        return self.__class__(**self.model_dump(exclude_defaults=True))
 
 
 class Parameter(TypeMetadata, Serializable):
@@ -317,12 +338,15 @@ class Parameter(TypeMetadata, Serializable):
         None, description="The value of the parameter(Saved in the dag file)"
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata.
 
         Transform the value to the real type.
         """
+        if not isinstance(values, dict):
+            return values
         type_cls = values.get("type_cls")
         to_handle_values = {
             "value": values.get("value"),
@@ -428,7 +452,7 @@ class Parameter(TypeMetadata, Serializable):
 
     def to_dict(self) -> Dict:
         """Convert current metadata to json dict."""
-        dict_value = self.dict(exclude={"options"})
+        dict_value = model_to_dict(self, exclude={"options"})
         if not self.options:
             dict_value["options"] = None
         elif isinstance(self.options, BaseDynamicOptions):
@@ -520,7 +544,7 @@ class BaseResource(Serializable, BaseModel):
 
     def to_dict(self) -> Dict:
         """Convert current metadata to json dict."""
-        return self.dict()
+        return model_to_dict(self)
 
 
 class Resource(BaseResource, TypeMetadata):
@@ -678,9 +702,12 @@ class BaseMetadata(BaseResource):
             )
         return runnable_parameters
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def base_pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata."""
+        if not isinstance(values, dict):
+            return values
         if "category_label" not in values:
             category = values["category"]
             if isinstance(category, str):
@@ -698,7 +725,7 @@ class BaseMetadata(BaseResource):
 
     def to_dict(self) -> Dict:
         """Convert current metadata to json dict."""
-        dict_value = self.dict(exclude={"parameters"})
+        dict_value = model_to_dict(self, exclude={"parameters"})
         dict_value["parameters"] = [
             parameter.to_dict() for parameter in self.parameters
         ]
@@ -723,14 +750,23 @@ class ResourceMetadata(BaseMetadata, TypeMetadata):
         ],
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata."""
+        if not isinstance(values, dict):
+            return values
         if "flow_type" not in values:
             values["flow_type"] = "resource"
         if "id" not in values:
             values["id"] = values["flow_type"] + "_" + values["type_cls"]
         return values
+
+    def new_alias(self, alias: Optional[List[str]] = None) -> List[str]:
+        """Get the new alias id."""
+        if not alias:
+            return []
+        return [f"{self.flow_type}_{a}" for a in alias]
 
 
 def register_resource(
@@ -740,6 +776,7 @@ def register_resource(
     parameters: Optional[List[Parameter]] = None,
     description: Optional[str] = None,
     resource_type: ResourceType = ResourceType.INSTANCE,
+    alias: Optional[List[str]] = None,
     **kwargs,
 ):
     """Register the resource.
@@ -753,6 +790,9 @@ def register_resource(
         description (Optional[str], optional): The description of the resource.
             Defaults to None.
         resource_type (ResourceType, optional): The type of the resource.
+        alias (Optional[List[str]], optional): The alias of the resource. Defaults to
+            None. For compatibility, we can use the alias to register the resource.
+
     """
     if resource_type == ResourceType.CLASS and parameters:
         raise ValueError("Class resource can't have parameters.")
@@ -782,7 +822,9 @@ def register_resource(
             resource_type=resource_type,
             **kwargs,
         )
-        _register_resource(cls, resource_metadata)
+        alias_ids = resource_metadata.new_alias(alias)
+        _register_alias_types(cls, alias_ids)
+        _register_resource(cls, resource_metadata, alias_ids)
         # Attach the metadata to the class
         cls._resource_metadata = resource_metadata
         return cls
@@ -819,9 +861,12 @@ class ViewMetadata(BaseMetadata):
         examples=["dbgpt.model.operators.LLMOperator"],
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def pre_fill(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre fill the metadata."""
+        if not isinstance(values, dict):
+            return values
         if "flow_type" not in values:
             values["flow_type"] = "operator"
         if "id" not in values:
@@ -947,11 +992,19 @@ class FlowRegistry:
         self._registry: Dict[str, _RegistryItem] = {}
 
     def register_flow(
-        self, view_cls: Type, metadata: Union[ViewMetadata, ResourceMetadata]
+        self,
+        view_cls: Type,
+        metadata: Union[ViewMetadata, ResourceMetadata],
+        alias_ids: Optional[List[str]] = None,
     ):
         """Register the operator."""
         key = metadata.id
         self._registry[key] = _RegistryItem(key=key, cls=view_cls, metadata=metadata)
+        if alias_ids:
+            for alias_id in alias_ids:
+                self._registry[alias_id] = _RegistryItem(
+                    key=alias_id, cls=view_cls, metadata=metadata
+                )
 
     def get_registry_item(self, key: str) -> Optional[_RegistryItem]:
         """Get the registry item by the key."""
@@ -996,6 +1049,10 @@ def _get_resource_class(type_key: str) -> _RegistryItem:
     return item
 
 
-def _register_resource(cls: Type, resource_metadata: ResourceMetadata):
+def _register_resource(
+    cls: Type,
+    resource_metadata: ResourceMetadata,
+    alias_ids: Optional[List[str]] = None,
+):
     """Register the operator."""
-    _OPERATOR_REGISTRY.register_flow(cls, resource_metadata)
+    _OPERATOR_REGISTRY.register_flow(cls, resource_metadata, alias_ids)

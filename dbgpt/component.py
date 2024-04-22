@@ -5,8 +5,10 @@ Manages the lifecycle and registration of components.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import sys
+import threading
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import TYPE_CHECKING, Dict, Optional, Type, TypeVar, Union
@@ -84,6 +86,7 @@ class ComponentType(str, Enum):
     AWEL_DAG_MANAGER = "dbgpt_awel_dag_manager"
     UNIFIED_METADATA_DB_MANAGER_FACTORY = "dbgpt_unified_metadata_db_manager_factory"
     CONNECTOR_MANAGER = "dbgpt_connector_manager"
+    AGENT_MANAGER = "dbgpt_agent_manager"
 
 
 _EMPTY_DEFAULT_COMPONENT = "_EMPTY_DEFAULT_COMPONENT"
@@ -162,6 +165,8 @@ class SystemApp(LifeCycle):
         ] = {}  # Dictionary to store registered components.
         self._asgi_app = asgi_app
         self._app_config = app_config or AppConfig()
+        self._stop_event = threading.Event()
+        self._stop_event.clear()
         self._build()
 
     @property
@@ -273,11 +278,14 @@ class SystemApp(LifeCycle):
 
     def before_stop(self):
         """Invoke the before_stop hooks for all registered components."""
+        if self._stop_event.is_set():
+            return
         for _, v in self.components.items():
             try:
                 v.before_stop()
             except Exception as e:
                 pass
+        self._stop_event.set()
 
     async def async_before_stop(self):
         """Asynchronously invoke the before_stop hooks for all registered components."""
@@ -287,9 +295,10 @@ class SystemApp(LifeCycle):
     def _build(self):
         """Integrate lifecycle events with the internal ASGI app if available."""
         if not self.app:
+            self._register_exit_handler()
             return
+        from dbgpt.util.fastapi import register_event_handler
 
-        @self.app.on_event("startup")
         async def startup_event():
             """ASGI app startup event handler."""
 
@@ -303,8 +312,14 @@ class SystemApp(LifeCycle):
             asyncio.create_task(_startup_func())
             self.after_start()
 
-        @self.app.on_event("shutdown")
         async def shutdown_event():
             """ASGI app shutdown event handler."""
             await self.async_before_stop()
             self.before_stop()
+
+        register_event_handler(self.app, "startup", startup_event)
+        register_event_handler(self.app, "shutdown", shutdown_event)
+
+    def _register_exit_handler(self):
+        """Register an exit handler to stop the system app."""
+        atexit.register(self.before_stop)

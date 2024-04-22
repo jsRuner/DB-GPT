@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from cachetools import TTLCache
 
-from dbgpt._private.pydantic import BaseModel
+from dbgpt._private.pydantic import BaseModel, model_to_dict
 from dbgpt.core.interface.message import ModelMessage, ModelMessageRoleType
 from dbgpt.util import BaseParameters
 from dbgpt.util.annotations import PublicAPI
@@ -312,7 +312,7 @@ class ModelRequest:
             if isinstance(context, dict):
                 context_dict = context
             elif isinstance(context, BaseModel):
-                context_dict = context.dict()
+                context_dict = model_to_dict(context)
             if context_dict and "stream" not in context_dict:
                 context_dict["stream"] = stream
             if context_dict:
@@ -857,3 +857,31 @@ class LLMClient(ABC):
         if not model_metadata:
             raise ValueError(f"Model {model} not found")
         return model_metadata
+
+    def __call__(self, *args, **kwargs) -> ModelOutput:
+        """Return the model output.
+
+        Call the LLM client to generate the response for the given message.
+
+        Please do not use this method in the production environment, it is only used
+        for debugging.
+        """
+        from dbgpt.util import get_or_create_event_loop
+
+        messages = kwargs.get("messages")
+        model = kwargs.get("model")
+        if messages:
+            del kwargs["messages"]
+            model_messages = ModelMessage.from_openai_messages(messages)
+        else:
+            model_messages = [ModelMessage.build_human_message(args[0])]
+        if not model:
+            if hasattr(self, "default_model"):
+                model = getattr(self, "default_model")
+            else:
+                raise ValueError("The default model is not set")
+        if "model" in kwargs:
+            del kwargs["model"]
+        req = ModelRequest.build_request(model, model_messages, **kwargs)
+        loop = get_or_create_event_loop()
+        return loop.run_until_complete(self.generate(req))

@@ -1,8 +1,8 @@
 """Postgres vector store."""
 import logging
-from typing import Any, List
+from typing import List, Optional
 
-from dbgpt._private.pydantic import Field
+from dbgpt._private.pydantic import ConfigDict, Field
 from dbgpt.core import Chunk
 from dbgpt.core.awel.flow import Parameter, ResourceCategory, register_resource
 from dbgpt.storage.vector_store.base import (
@@ -10,6 +10,7 @@ from dbgpt.storage.vector_store.base import (
     VectorStoreBase,
     VectorStoreConfig,
 )
+from dbgpt.storage.vector_store.filters import MetadataFilters
 from dbgpt.util.i18n_utils import _
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,7 @@ logger = logging.getLogger(__name__)
 class PGVectorConfig(VectorStoreConfig):
     """PG vector store config."""
 
-    class Config:
-        """Config for BaseModel."""
-
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     connection_string: str = Field(
         default=None,
@@ -70,9 +68,11 @@ class PGVectorStore(VectorStoreBase):
             connection_string=self.connection_string,
         )
 
-    def similar_search(self, text: str, topk: int, **kwargs: Any) -> List[Chunk]:
+    def similar_search(
+        self, text: str, topk: int, filters: Optional[MetadataFilters] = None
+    ) -> List[Chunk]:
         """Perform similar search in PGVector."""
-        return self.vector_store_client.similarity_search(text, topk)
+        return self.vector_store_client.similarity_search(text, topk, filters)
 
     def vector_name_exists(self) -> bool:
         """Check if vector name exists."""
